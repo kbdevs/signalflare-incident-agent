@@ -1,13 +1,16 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowUp,
+  Bot,
+  Braces,
   Check,
   ChevronDown,
   LoaderCircle,
+  Radio,
   RotateCcw,
   Search,
-  Terminal,
+  Wrench,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,8 +22,13 @@ type RunState = "idle" | "loading" | "complete" | "error";
 
 interface AgentStep {
   index: number;
+  iteration: number;
+  callId: string;
   tool: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
   summary: string;
+  durationMs: number;
   error?: string;
 }
 
@@ -31,6 +39,20 @@ interface InvestigationResult {
   model: string;
   status: "complete" | "partial";
 }
+
+interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+type InvestigationEvent =
+  | { type: "run_started"; model: string }
+  | { type: "model_turn"; iteration: number; phase: "investigate" | "synthesize"; model: string }
+  | { type: "tool_call"; iteration: number; call: ToolCall }
+  | { type: "tool_result"; step: AgentStep }
+  | { type: "complete"; result: InvestigationResult }
+  | { type: "error"; message: string };
 
 const DEFAULT_QUESTION = "Why are checkout requests failing, when did it start, and what should we do?";
 
@@ -46,14 +68,6 @@ const SERVICES = [
   { name: "inventory-api", state: "critical", detail: "14.2% errors" },
   { name: "payments-api", state: "healthy", detail: "224ms p95" },
   { name: "postgres-primary", state: "saturated", detail: "98 / 100 conns" },
-];
-
-const LOADING_STEPS = [
-  "Mapping services",
-  "Reading telemetry",
-  "Following traces",
-  "Checking changes",
-  "Writing assessment",
 ];
 
 function Report({ text }: { text: string }) {
@@ -132,58 +146,124 @@ function EmptyState() {
   );
 }
 
-function LoadingState({ activeStep }: { activeStep: number }) {
-  return (
-    <div className="flex min-h-[530px] flex-col items-center justify-center px-8">
-      <LoaderCircle className="mb-5 size-5 animate-spin text-foreground" strokeWidth={1.5} />
-      <h2 className="text-sm font-medium">Investigating incident</h2>
-      <div className="mt-6 w-full max-w-[250px] space-y-3">
-        {LOADING_STEPS.map((step, index) => (
-          <div key={step} className="flex items-center gap-3 text-xs">
-            <span className={cn("grid size-4 place-items-center rounded-full text-muted-foreground", index < activeStep && "bg-foreground text-background", index === activeStep && "shadow-[inset_0_0_0_1px_hsl(var(--foreground))]")}>
-              {index < activeStep ? <Check className="size-2.5" strokeWidth={2.5} /> : <span className="size-1 rounded-full bg-current" />}
-            </span>
-            <span className={cn("text-muted-foreground", index === activeStep && "text-foreground")}>{step}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+function formatJson(value: unknown) {
+  return JSON.stringify(value, null, 2);
 }
 
-function ResultState({ result }: { result: InvestigationResult }) {
+function ActivityTimeline({ events, live, status }: { events: InvestigationEvent[]; live: boolean; status?: InvestigationResult["status"] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const model = events.find((event) => event.type === "run_started")?.model ?? "@cf/google/gemma-4-26b-a4b-it";
+  const resultByCall = useMemo(() => new Map(
+    events.filter((event): event is Extract<InvestigationEvent, { type: "tool_result" }> => event.type === "tool_result")
+      .map((event) => [event.step.callId, event.step]),
+  ), [events]);
+  const visibleEvents = events.filter((event) => event.type === "model_turn" || event.type === "tool_call");
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  }, [events.length]);
+
   return (
-    <div className="result-enter p-6 md:p-8">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <h2 className="text-lg font-semibold tracking-tight">Incident report</h2>
-        <Badge variant="outline">
-          <Check className="size-3" />
-          {result.status === "complete" ? "Complete" : "Partial"}
+    <section aria-labelledby="activity-heading">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-6 pt-6 md:px-8 md:pt-8">
+        <div>
+          <h2 id="activity-heading" className="text-sm font-semibold tracking-tight">Agent activity</h2>
+          <p className="mt-1 font-mono text-[10px] text-muted-foreground">Workers AI · {model}</p>
+        </div>
+        <Badge variant={live ? "default" : "outline"}>
+          {live ? <Radio className="size-3 animate-pulse" /> : status === "complete" ? <Check className="size-3" /> : <Activity className="size-3" />}
+          {live ? "Live" : status === "complete" ? "Complete" : "Partial"}
         </Badge>
       </div>
 
-      <Report text={result.answer} />
+      <div ref={scrollRef} className="mt-5 max-h-[560px] overflow-y-auto px-6 pb-6 md:px-8">
+        {visibleEvents.length === 0 && (
+          <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-muted-foreground">
+            <LoaderCircle className="size-3.5 animate-spin" />Connecting to Workers AI
+          </div>
+        )}
 
-      <Separator className="my-7" />
+        <ol className="border-l border-border pl-5">
+          {visibleEvents.map((event, index) => {
+            if (event.type === "model_turn") {
+              return (
+                <li key={`turn-${event.iteration}-${index}`} className="timeline-enter relative pb-5">
+                  <span className="absolute -left-[27px] top-0 grid size-3 place-items-center rounded-full bg-background shadow-[0_0_0_1px_hsl(var(--border))]">
+                    <span className="size-1 rounded-full bg-foreground" />
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Bot className="size-3.5 text-muted-foreground" />
+                    <span className="text-xs font-medium">AI turn {event.iteration}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{event.phase === "synthesize" ? "synthesizing report" : "choosing next action"}</span>
+                  </div>
+                </li>
+              );
+            }
 
-      <details open className="group">
-        <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-xs font-medium select-none">
-          <span className="flex items-center gap-2"><Terminal className="size-3.5 text-muted-foreground" />Tool trace</span>
-          <span className="flex items-center gap-2 text-[11px] font-normal tabular-nums text-muted-foreground">
-            {result.steps.length} calls · {result.iterations} turns
-            <ChevronDown className="size-3.5 transition-transform duration-150 group-open:rotate-180" />
-          </span>
-        </summary>
-        <ol className="mt-2 border-l border-border pl-4">
-          {result.steps.map((step) => (
-            <li key={`${step.index}-${step.tool}`} className="relative py-3 first:pt-2">
-              <span className="absolute -left-[18px] top-[18px] size-1.5 rounded-full bg-muted-foreground" />
-              <div className="font-mono text-[11px] text-foreground">{step.tool}</div>
-              <p className="mt-1 text-pretty text-[11px] leading-relaxed text-muted-foreground">{step.summary}</p>
-            </li>
-          ))}
+            const toolResult = resultByCall.get(event.call.id);
+            return (
+              <li key={event.call.id} className="timeline-enter relative pb-5">
+                <span className="absolute -left-[27px] top-1 size-3 rounded-full bg-foreground shadow-[0_0_0_3px_hsl(var(--background))]" />
+                <details open className="group overflow-hidden rounded-lg shadow-[0_0_0_1px_hsl(var(--border)),0_1px_2px_hsl(var(--foreground)/0.03)]">
+                  <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 select-none">
+                    <Wrench className="size-3.5 text-muted-foreground" />
+                    <code className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium">{event.call.name}</code>
+                    <span className="font-mono text-[9px] tabular-nums text-muted-foreground">turn {event.iteration}</span>
+                    {toolResult ? <Check className="size-3 text-muted-foreground" /> : <LoaderCircle className="size-3 animate-spin text-muted-foreground" />}
+                    <ChevronDown className="size-3 text-muted-foreground transition-transform duration-150 group-open:rotate-180" />
+                  </summary>
+
+                  <div className="border-t border-border bg-muted/20 px-3 py-3">
+                    <div className="mb-1.5 flex items-center gap-1.5 label"><Braces className="size-3" />Arguments</div>
+                    <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-background p-2.5 font-mono text-[10px] leading-relaxed text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">{formatJson(event.call.arguments)}</pre>
+
+                    <div className="mb-1.5 mt-3 flex items-center justify-between gap-2">
+                      <span className="label">Tool response</span>
+                      {toolResult && <span className="font-mono text-[9px] tabular-nums text-muted-foreground">{toolResult.durationMs}ms</span>}
+                    </div>
+                    {toolResult ? (
+                      <>
+                        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background p-2.5 font-mono text-[10px] leading-relaxed text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">{formatJson(toolResult.result)}</pre>
+                        <p className="mt-2 text-pretty text-[10px] leading-relaxed text-muted-foreground">{toolResult.summary}</p>
+                      </>
+                    ) : (
+                      <div className="flex min-h-10 items-center gap-2 rounded-md bg-background px-2.5 text-[10px] text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+                        <LoaderCircle className="size-3 animate-spin" />Executing tool
+                      </div>
+                    )}
+                  </div>
+                </details>
+              </li>
+            );
+          })}
         </ol>
-      </details>
+
+        {live && visibleEvents.length > 0 && (
+          <div className="flex items-center gap-2 pl-5 text-[10px] text-muted-foreground">
+            <span className="size-1.5 animate-pulse rounded-full bg-foreground" />Waiting for the next model event
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ResultState({ result, events }: { result: InvestigationResult; events: InvestigationEvent[] }) {
+  return (
+    <div>
+      <ActivityTimeline events={events} live={false} status={result.status} />
+      <Separator />
+      <div className="result-enter p-6 md:p-8">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h2 className="text-lg font-semibold tracking-tight">Incident report</h2>
+          <Badge variant="outline">
+            <Check className="size-3" />
+            {result.status === "complete" ? "Complete" : "Partial"}
+          </Badge>
+        </div>
+        <Report text={result.answer} />
+      </div>
     </div>
   );
 }
@@ -194,32 +274,58 @@ export function App() {
   const [state, setState] = useState<RunState>("idle");
   const [result, setResult] = useState<InvestigationResult | null>(null);
   const [error, setError] = useState("");
-  const [activeStep, setActiveStep] = useState(0);
-
-  useEffect(() => {
-    if (state !== "loading") return;
-    setActiveStep(0);
-    const timer = window.setInterval(() => setActiveStep((current) => Math.min(current + 1, LOADING_STEPS.length - 1)), 2300);
-    return () => window.clearInterval(timer);
-  }, [state]);
+  const [events, setEvents] = useState<InvestigationEvent[]>([]);
 
   async function runInvestigation(value: string) {
     const cleanQuestion = value.trim();
     if (cleanQuestion.length < 8) return;
     setLastQuestion(cleanQuestion);
     setState("loading");
+    setResult(null);
+    setEvents([]);
     setError("");
 
     try {
-      const response = await fetch("/api/investigate", {
+      const response = await fetch("/api/investigate/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: cleanQuestion }),
       });
-      const data = await response.json() as InvestigationResult & { error?: string };
-      if (!response.ok) throw new Error(data.error || `Request failed with status ${response.status}`);
-      setResult(data);
-      setState("complete");
+      if (!response.ok) {
+        const data = await response.json() as { error?: string };
+        throw new Error(data.error || `Request failed with status ${response.status}`);
+      }
+      if (!response.body) throw new Error("The browser did not receive an event stream.");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed = false;
+
+      while (true) {
+        const { value: chunk, done } = await reader.read();
+        buffer += decoder.decode(chunk, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as InvestigationEvent;
+          setEvents((current) => [...current, event]);
+
+          if (event.type === "complete") {
+            completed = true;
+            setResult(event.result);
+            setState("complete");
+          } else if (event.type === "error") {
+            throw new Error(event.message);
+          }
+        }
+
+        if (done) break;
+      }
+
+      if (!completed) throw new Error("The agent stream ended before the investigation completed.");
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : "The investigation could not be completed.");
       setState("error");
@@ -284,8 +390,8 @@ export function App() {
 
           <section aria-live="polite" aria-label="Investigation output" className="min-w-0 bg-background">
             {state === "idle" && <EmptyState />}
-            {state === "loading" && <LoadingState activeStep={activeStep} />}
-            {state === "complete" && result && <ResultState result={result} />}
+            {state === "loading" && <ActivityTimeline events={events} live />}
+            {state === "complete" && result && <ResultState result={result} events={events} />}
             {state === "error" && (
               <div className="flex min-h-[530px] flex-col items-center justify-center px-8 text-center">
                 <div className="mb-5 grid size-10 place-items-center rounded-lg bg-muted"><Activity className="size-4" /></div>

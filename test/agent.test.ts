@@ -17,8 +17,10 @@ describe("agent loop", () => {
   it("uses multiple evidence types before returning a conclusion", async () => {
     const responses = [
       toolTurn("call_1", "list_services", {}),
-      toolTurn("call_2", "search_logs", { service: "checkout-api", level: "error" }),
-      toolTurn("call_3", "inspect_trace", { trace_id: "tr-a91f2" }),
+      toolTurn("call_2", "query_metrics", { service: "checkout-api", metric: "error_rate", window: "last_15m" }),
+      toolTurn("call_3", "search_logs", { service: "checkout-api", level: "error" }),
+      toolTurn("call_4", "inspect_trace", { trace_id: "tr-a91f2" }),
+      toolTurn("call_5", "list_recent_changes", { service: "inventory-api" }),
       {
         choices: [{
           message: {
@@ -29,6 +31,7 @@ describe("agent loop", () => {
       },
     ];
     const requests: Array<Record<string, unknown>> = [];
+    const events: string[] = [];
     const ai: AiRunner = {
       async run(_model, input) {
         requests.push(input);
@@ -38,14 +41,28 @@ describe("agent loop", () => {
       },
     };
 
-    const result = await investigate(ai, "Why is checkout failing right now?");
+    const result = await investigate(ai, "Why is checkout failing right now?", (event) => {
+      events.push(event.type);
+    });
 
     expect(result.status).toBe("complete");
-    expect(result.steps.map((step) => step.tool)).toEqual(["list_services", "search_logs", "inspect_trace"]);
+    expect(result.steps.map((step) => step.tool)).toEqual(["list_services", "query_metrics", "search_logs", "inspect_trace", "list_recent_changes"]);
     expect(result.answer).toContain("## Assessment");
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(6);
     expect(requests[0]?.tool_choice).toBe("required");
-    expect(requests[3]?.tool_choice).toBe("auto");
+    expect(requests[3]?.tool_choice).toBe("required");
+    expect(requests[4]?.tool_choice).toBe("required");
+    expect(requests[5]?.tool_choice).toBe("auto");
+    expect(events).toEqual([
+      "run_started",
+      "model_turn", "tool_call", "tool_result",
+      "model_turn", "tool_call", "tool_result",
+      "model_turn", "tool_call", "tool_result",
+      "model_turn", "tool_call", "tool_result",
+      "model_turn", "tool_call", "tool_result",
+      "model_turn", "complete",
+    ]);
+    expect(result.steps[2]?.result).toEqual(expect.objectContaining({ count: 2 }));
   });
 
   it("returns a safe partial report when inference fails", async () => {

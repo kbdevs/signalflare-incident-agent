@@ -21,8 +21,11 @@ export type MetricName =
 
 export interface AgentStep {
   index: number;
+  iteration: number;
+  callId: string;
   tool: string;
   arguments: Record<string, unknown>;
+  result: unknown;
   summary: string;
   durationMs: number;
   error?: string;
@@ -41,6 +44,14 @@ export interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
 }
+
+export type InvestigationEvent =
+  | { type: "run_started"; model: string }
+  | { type: "model_turn"; iteration: number; phase: "investigate" | "synthesize"; model: string }
+  | { type: "tool_call"; iteration: number; call: ToolCall }
+  | { type: "tool_result"; step: AgentStep }
+  | { type: "complete"; result: InvestigationResult }
+  | { type: "error"; message: string };
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";

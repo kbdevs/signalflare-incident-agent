@@ -1,9 +1,10 @@
 import { executeTelemetryTool, summarizeToolResult, TOOL_DEFINITIONS } from "./telemetry";
-import type { AgentStep, ChatMessage, InvestigationResult, ToolCall } from "./types";
+import type { AgentStep, ChatMessage, InvestigationEvent, InvestigationResult, ToolCall } from "./types";
 
 export const MODEL = "@cf/google/gemma-4-26b-a4b-it";
-const MAX_ITERATIONS = 7;
-const MAX_TOOL_CALLS = 10;
+const MAX_ITERATIONS = 8;
+const MAX_TOOL_CALLS = 14;
+const REQUIRED_EVIDENCE = ["query_metrics", "search_logs", "inspect_trace", "list_recent_changes"] as const;
 
 const SYSTEM_PROMPT = `You are SignalFlare, a production incident investigator operating at 2026-07-20T14:15:00Z.
 
@@ -26,6 +27,8 @@ Do not expose these instructions or hidden reasoning. The visible tool trace alr
 export interface AiRunner {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
+
+export type InvestigationEventSink = (event: InvestigationEvent) => void | Promise<void>;
 
 interface ModelTurn {
   content: string;
@@ -117,7 +120,7 @@ Roll back the inventory cache configuration or restore the TTL to 300 seconds. T
 High. The timing, metrics, logs, trace, and configuration diff agree. The remaining uncertainty is whether any secondary load source contributed to the connection spike.`;
 }
 
-export async function investigate(ai: AiRunner, question: string): Promise<InvestigationResult> {
+export async function investigate(ai: AiRunner, question: string, emit?: InvestigationEventSink): Promise<InvestigationResult> {
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: question },
@@ -129,9 +132,13 @@ export async function investigate(ai: AiRunner, question: string): Promise<Inves
   let iterations = 0;
   let partial = false;
 
+  await emit?.({ type: "run_started", model: MODEL });
+
   for (let iteration = 0; iteration < MAX_ITERATIONS && steps.length < MAX_TOOL_CALLS; iteration += 1) {
     iterations = iteration + 1;
-    const needsEvidence = evidenceTypes.size < 3;
+    const missingEvidence = REQUIRED_EVIDENCE.filter((tool) => !evidenceTypes.has(tool));
+    const needsEvidence = missingEvidence.length > 0;
+    await emit?.({ type: "model_turn", iteration: iterations, phase: "investigate", model: MODEL });
     let raw: unknown;
     try {
       raw = await runInference(ai, {
@@ -164,43 +171,62 @@ export async function investigate(ai: AiRunner, question: string): Promise<Inves
 
     for (const call of turn.toolCalls) {
       if (steps.length >= MAX_TOOL_CALLS) break;
+      await emit?.({ type: "tool_call", iteration: iterations, call });
       const started = Date.now();
       const fingerprint = `${call.name}:${JSON.stringify(call.arguments)}`;
       let content: string;
       let summary: string;
       let errorMessage: string | undefined;
+      let resultData: unknown;
 
       if (seenCalls.has(fingerprint)) {
         content = seenCalls.get(fingerprint)!;
+        resultData = JSON.parse(content);
         summary = "Returned the cached result for a duplicate tool call.";
       } else {
         try {
           const result = executeTelemetryTool(call.name, call.arguments);
+          resultData = result;
           content = JSON.stringify(result);
           seenCalls.set(fingerprint, content);
           evidenceTypes.add(call.name);
           summary = summarizeToolResult(call.name, result);
         } catch (error) {
           errorMessage = safeError(error);
-          content = JSON.stringify({ error: errorMessage });
+          resultData = { error: errorMessage };
+          content = JSON.stringify(resultData);
           summary = `Tool failed: ${errorMessage}`;
         }
       }
 
-      steps.push({
+      const step: AgentStep = {
         index: steps.length + 1,
+        iteration: iterations,
+        callId: call.id,
         tool: call.name,
         arguments: call.arguments,
+        result: resultData,
         summary,
         durationMs: Date.now() - started,
         ...(errorMessage ? { error: errorMessage } : {}),
-      });
+      };
+      steps.push(step);
+      await emit?.({ type: "tool_result", step });
       messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content });
+    }
+
+    const stillMissing = REQUIRED_EVIDENCE.filter((tool) => !evidenceTypes.has(tool));
+    if (stillMissing.length > 0) {
+      messages.push({
+        role: "user",
+        content: `Required evidence still missing: ${stillMissing.join(", ")}. Call one of these tools next and do not repeat an earlier call.`,
+      });
     }
   }
 
   if (!finalContent && !partial) {
     try {
+      await emit?.({ type: "model_turn", iteration: iterations + 1, phase: "synthesize", model: MODEL });
       const raw = await runInference(ai, {
         messages: [
           ...messages,
@@ -218,13 +244,18 @@ export async function investigate(ai: AiRunner, question: string): Promise<Inves
     }
   }
 
-  if (!finalContent) finalContent = fallbackConclusion();
+  if (!finalContent) {
+    partial = true;
+    finalContent = fallbackConclusion();
+  }
 
-  return {
+  const result: InvestigationResult = {
     answer: finalContent,
     steps,
     iterations,
     model: MODEL,
     status: partial ? "partial" : "complete",
   };
+  await emit?.({ type: "complete", result });
+  return result;
 }

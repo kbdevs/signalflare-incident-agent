@@ -32,7 +32,7 @@ sequenceDiagram
     Worker-->>User: Assessment + visible tool trace
 ```
 
-The loop is implemented explicitly in [`src/agent.ts`](src/agent.ts). It is not a single prompt: the model decides what to inspect next based on each tool result. The Worker enforces a maximum of seven planning iterations and ten tool calls, validates every tool argument, caches exact duplicate calls, and falls back to a clearly marked partial assessment if model synthesis fails.
+The loop is implemented explicitly in [`src/agent.ts`](src/agent.ts). It is not a single prompt: the model decides what to inspect next based on each tool result. The Worker enforces a maximum of eight planning iterations and fourteen tool calls, validates every tool argument, caches exact duplicate calls, and falls back to a clearly marked partial assessment if model synthesis fails.
 
 The reviewer interface is a deliberately minimal grayscale React/Tailwind console built from local shadcn/ui primitives. It keeps the prompt, service snapshot, incident report, and agent tool trace on one screen without a marketing shell.
 
@@ -49,7 +49,7 @@ The reviewer interface is a deliberately minimal grayscale React/Tailwind consol
 ## Design decisions and tradeoffs
 
 - **Depth over integrations.** Five bounded tools operate over one coherent scenario. This makes the investigation reliable and reviewable instead of spreading effort across half-working provider APIs.
-- **Real agent loop, visible behavior.** Native Workers AI function calling drives multiple model turns. The UI exposes a summarized tool trace without exposing chain-of-thought.
+- **Real agent loop, visible behavior.** Native Workers AI function calling drives multiple model turns. An NDJSON stream shows each real model turn, selected function, exact arguments, and returned telemetry as it happens—without exposing chain-of-thought.
 - **Deterministic telemetry.** Reviewers see the same incident and can try adversarial or differently phrased questions. In production, the tool implementations would call Cloudflare Analytics, an OTel backend, and deployment APIs without changing the agent loop.
 - **Evidence minimum.** The orchestration requires three distinct evidence types before allowing a final answer. That is a guardrail against plausible diagnoses based on one noisy signal.
 - **Bounded failure modes.** Tool inputs are allow-listed, results are size-limited, logs are explicitly treated as untrusted data, and both tool and model budgets are capped.
@@ -79,6 +79,6 @@ The Worker configuration in [`wrangler.jsonc`](wrangler.jsonc) declares the Work
 
 1. Replace the demo adapters with read-only Cloudflare GraphQL Analytics, Workers Logs, and deployment APIs.
 2. Store investigation sessions in a Durable Object so a reviewer can ask follow-up questions without resending all evidence.
-3. Stream tool activity to the UI with server-sent events and add per-tool latency/token observability.
+3. Add per-model-turn token, inference latency, and cost observability.
 4. Add an evaluation set containing ambiguous incidents, partial outages, telemetry gaps, and prompt-injection strings inside logs.
 5. Introduce a scheduled watchdog that learns a rolling baseline and opens an investigation when multiple signals drift together.
