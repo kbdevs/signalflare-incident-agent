@@ -256,7 +256,7 @@ function ResultState({ result, events }: { result: InvestigationResult; events: 
       <Separator />
       <div className="result-enter p-6 md:p-8">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <h2 className="text-lg font-semibold tracking-tight">Incident report</h2>
+          <h2 className="text-lg font-semibold tracking-tight">Response</h2>
           <Badge variant="outline">
             <Check className="size-3" />
             {result.status === "complete" ? "Complete" : "Partial"}

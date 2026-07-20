@@ -32,7 +32,7 @@ sequenceDiagram
     Worker-->>User: Assessment + visible tool trace
 ```
 
-The loop is implemented explicitly in [`src/agent.ts`](src/agent.ts). It is not a single prompt: the model decides what to inspect next based on each tool result. The Worker enforces a maximum of eight planning iterations and fourteen tool calls, validates every tool argument, caches exact duplicate calls, and falls back to a clearly marked partial assessment if model synthesis fails.
+The loop is implemented explicitly in [`src/agent.ts`](src/agent.ts). It is not a single prompt: the model first decides whether the request needs telemetry, answers direct requests without tools, and chooses only relevant evidence for investigation questions. The Worker enforces a maximum of eight planning iterations and fourteen tool calls, validates every tool argument, caches exact duplicate calls, and falls back to a clearly marked partial assessment if model synthesis fails.
 
 The reviewer interface is a deliberately minimal grayscale React/Tailwind console built from local shadcn/ui primitives. It keeps the prompt, service snapshot, incident report, and agent tool trace on one screen without a marketing shell.
 

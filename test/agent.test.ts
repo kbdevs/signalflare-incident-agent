@@ -14,6 +14,24 @@ function toolTurn(id: string, name: string, args: Record<string, unknown>) {
 }
 
 describe("agent loop", () => {
+  it("answers a direct request without forcing telemetry tools", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const ai: AiRunner = {
+      async run(_model, input) {
+        requests.push(input);
+        return { choices: [{ message: { role: "assistant", content: "pineapple" } }] };
+      },
+    };
+
+    const result = await investigate(ai, "Reply with just the word pineapple.");
+
+    expect(result.status).toBe("complete");
+    expect(result.answer).toBe("pineapple");
+    expect(result.steps).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.tool_choice).toBe("auto");
+  });
+
   it("uses multiple evidence types before returning a conclusion", async () => {
     const responses = [
       toolTurn("call_1", "list_services", {}),
@@ -49,9 +67,9 @@ describe("agent loop", () => {
     expect(result.steps.map((step) => step.tool)).toEqual(["list_services", "query_metrics", "search_logs", "inspect_trace", "list_recent_changes"]);
     expect(result.answer).toContain("## Assessment");
     expect(requests).toHaveLength(6);
-    expect(requests[0]?.tool_choice).toBe("required");
-    expect(requests[3]?.tool_choice).toBe("required");
-    expect(requests[4]?.tool_choice).toBe("required");
+    expect(requests[0]?.tool_choice).toBe("auto");
+    expect(requests[3]?.tool_choice).toBe("auto");
+    expect(requests[4]?.tool_choice).toBe("auto");
     expect(requests[5]?.tool_choice).toBe("auto");
     expect(events).toEqual([
       "run_started",
@@ -69,6 +87,7 @@ describe("agent loop", () => {
     const ai: AiRunner = { async run() { throw new Error("upstream unavailable"); } };
     const result = await investigate(ai, "Investigate the current checkout incident.");
     expect(result.status).toBe("partial");
-    expect(result.answer).toContain("CACHE_TTL_SECONDS");
+    expect(result.answer).toContain("AI service did not return a usable response");
+    expect(result.answer).not.toContain("CACHE_TTL_SECONDS");
   });
 });
