@@ -363,7 +363,11 @@ export function App() {
                   }}
                   aria-label="Incident question"
                 />
-                <Button type="submit" disabled={state === "loading" || question.trim().length < 8} className="h-10 w-full rounded-lg">
+                <Button
+                  type="submit"
+                  disabled={state === "loading" || question.trim().length < 8}
+                  className="h-10 w-full rounded-lg bg-[hsl(0_0%_20%)] text-foreground shadow-[inset_0_0_0_1px_rgb(255_255_255/0.08)] hover:bg-[hsl(0_0%_24%)]"
+                >
                   {state === "loading" ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}
                   {state === "loading" ? "Investigating" : "Run investigation"}
                 </Button>
