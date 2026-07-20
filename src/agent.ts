@@ -88,6 +88,19 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 240) : "Unknown tool error";
 }
 
+async function runInference(ai: AiRunner, input: Record<string, unknown>): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await ai.run(MODEL, input);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 function fallbackConclusion(): string {
   return `## Assessment
 Checkout failures began just after 14:02 UTC. The most likely causal chain is: the inventory deployment disabled response caching, inventory traffic surged, the PostgreSQL connection pool saturated, inventory reservations timed out, and checkout returned 503s.
@@ -121,7 +134,7 @@ export async function investigate(ai: AiRunner, question: string): Promise<Inves
     const needsEvidence = evidenceTypes.size < 3;
     let raw: unknown;
     try {
-      raw = await ai.run(MODEL, {
+      raw = await runInference(ai, {
         messages,
         tools: TOOL_DEFINITIONS,
         tool_choice: needsEvidence ? "required" : "auto",
@@ -188,7 +201,7 @@ export async function investigate(ai: AiRunner, question: string): Promise<Inves
 
   if (!finalContent && !partial) {
     try {
-      const raw = await ai.run(MODEL, {
+      const raw = await runInference(ai, {
         messages: [
           ...messages,
           { role: "user", content: "Tool budget reached. Write the final evidence-grounded incident report now." },
