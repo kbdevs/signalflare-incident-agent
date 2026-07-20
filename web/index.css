@@ -1,18 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --background: 0 0% 98%;
-  --foreground: 0 0% 9%;
-  --card: 0 0% 100%;
-  --card-foreground: 0 0% 9%;
-  --primary: 0 0% 9%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 0 0% 94%;
-  --secondary-foreground: 0 0% 15%;
-  --muted: 0 0% 94%;
-  --muted-foreground: 0 0% 44%;
-  --border: 0 0% 88%;
-  --ring: 0 0% 20%;
+  color-scheme: dark;
+  --background: 0 0% 5%;
+  --foreground: 0 0% 93%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 93%;
+  --primary: 0 0% 94%;
+  --primary-foreground: 0 0% 7%;
+  --secondary: 0 0% 11%;
+  --secondary-foreground: 0 0% 88%;
+  --muted: 0 0% 11%;
+  --muted-foreground: 0 0% 61%;
+  --border: 0 0% 17%;
+  --ring: 0 0% 70%;
 }
 
 @theme inline {
@@ -39,9 +40,16 @@ html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: hsl(var(--background));
+  scrollbar-color: hsl(var(--border)) transparent;
+}
 button, textarea { font: inherit; }
 button { user-select: none; }
+textarea { caret-color: hsl(var(--foreground)); }
 ::selection { color: hsl(var(--primary-foreground)); background: hsl(var(--primary)); }
 
 .label {

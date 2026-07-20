@@ -81,14 +81,14 @@ function Report({ text }: { text: string }) {
 
     for (const rawLine of text.split("\n")) {
       const line = rawLine.trim();
-      if (line.startsWith("## ")) {
+      if (/^#{1,3}\s/.test(line)) {
         flush();
-        output.push({ type: "heading", value: line.slice(3) });
+        output.push({ type: "heading", value: line.replace(/^#{1,3}\s+/, "") });
       } else if (line.startsWith("- ")) {
         list.push(line.slice(2));
       } else if (line) {
         flush();
-        output.push({ type: "paragraph", value: line.replaceAll("**", "") });
+        output.push({ type: "paragraph", value: line });
       }
     }
     flush();
@@ -96,7 +96,7 @@ function Report({ text }: { text: string }) {
   }, [text]);
 
   const withCode = (value: string) =>
-    value.split(/(`[^`]+`)/g).map((part, index) =>
+    value.replaceAll("**", "").split(/(`[^`]+`)/g).map((part, index) =>
       part.startsWith("`") && part.endsWith("`")
         ? <code key={index}>{part.slice(1, -1)}</code>
         : part,
@@ -344,11 +344,11 @@ export function App() {
           <h1 className="text-balance text-xl font-semibold tracking-[-0.03em] md:text-2xl">Incident investigator</h1>
         </div>
 
-        <div className="grid overflow-hidden rounded-xl bg-card shadow-[0_0_0_1px_hsl(var(--border)),0_12px_32px_hsl(var(--foreground)/0.04)] lg:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="grid overflow-hidden rounded-xl bg-card shadow-[0_0_0_1px_rgb(255_255_255/0.08),0_20px_60px_rgb(0_0_0/0.42)] lg:grid-cols-[360px_minmax(0,1fr)]">
           <aside className="border-b border-border bg-muted/25 p-5 lg:border-b-0 lg:border-r lg:p-6">
             <form onSubmit={handleSubmit}>
               <label htmlFor="question" className="label mb-3 block">Investigation prompt</label>
-              <div className="rounded-xl bg-background p-1 shadow-[0_0_0_1px_hsl(var(--border)),0_1px_2px_hsl(var(--foreground)/0.04)] focus-within:shadow-[0_0_0_1px_hsl(var(--foreground))]">
+              <div className="rounded-xl bg-background p-1 shadow-[0_0_0_1px_rgb(255_255_255/0.08)] transition-[box-shadow] duration-150 focus-within:shadow-[0_0_0_1px_rgb(255_255_255/0.28),0_0_0_4px_rgb(255_255_255/0.04)]">
                 <Textarea
                   id="question"
                   value={question}

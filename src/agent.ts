@@ -43,14 +43,57 @@ interface ModelTurn {
   assistantMessage: ChatMessage;
 }
 
-function parseArguments(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-  if (typeof value !== "string" || value.trim() === "") return {};
+function splitJsonObjects(value: string): Record<string, unknown>[] {
+  const objects: Record<string, unknown>[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth < 0) return [];
+      if (depth === 0 && start >= 0) {
+        try {
+          const parsed = JSON.parse(value.slice(start, index + 1));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+          objects.push(parsed as Record<string, unknown>);
+        } catch {
+          return [];
+        }
+        start = -1;
+      }
+    } else if (depth === 0 && !/\s/.test(character)) {
+      return [];
+    }
+  }
+
+  return depth === 0 && !inString ? objects : [];
+}
+
+function parseArguments(value: unknown): Record<string, unknown>[] {
+  if (value && typeof value === "object" && !Array.isArray(value)) return [value as Record<string, unknown>];
+  if (typeof value !== "string" || value.trim() === "") return [{}];
   try {
     const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? [parsed] : [{}];
   } catch {
-    return { _invalid_json: value };
+    const recovered = splitJsonObjects(value);
+    return recovered.length > 0 ? recovered : [{ _invalid_json: value }];
   }
 }
 
@@ -63,14 +106,16 @@ function extractModelTurn(raw: unknown, iteration: number): ModelTurn {
   const nativeCalls = Array.isArray(output.tool_calls) ? output.tool_calls : [];
 
   const sourceCalls = openAiCalls.length > 0 ? openAiCalls : nativeCalls;
-  const toolCalls = sourceCalls.map((item, index) => {
+  const toolCalls = sourceCalls.flatMap((item, index) => {
     const call = item as Record<string, unknown>;
     const fn = (call.function ?? call) as Record<string, unknown>;
-    return {
-      id: typeof call.id === "string" ? call.id : `call_${iteration}_${index}`,
+    const argumentSets = parseArguments(fn.arguments ?? call.arguments);
+    const baseId = typeof call.id === "string" ? call.id : `call_${iteration}_${index}`;
+    return argumentSets.map((arguments_, argumentIndex) => ({
+      id: argumentSets.length === 1 ? baseId : `${baseId}_${argumentIndex + 1}`,
       name: String(fn.name ?? call.name ?? ""),
-      arguments: parseArguments(fn.arguments ?? call.arguments),
-    };
+      arguments: arguments_,
+    }));
   }).filter((call) => call.name.length > 0);
 
   const content =
@@ -128,6 +173,24 @@ Retry the investigation. Do not take remediation action based only on this parti
 
 ## Confidence
 Low. The tool results above were collected, but the model did not complete its analysis.`;
+}
+
+function compactSynthesisMessages(question: string, steps: AgentStep[]): ChatMessage[] {
+  const evidence = steps.map((step) => ({
+    tool: step.tool,
+    arguments: step.arguments,
+    result: step.result,
+    summary: step.summary,
+    ...(step.error ? { error: step.error } : {}),
+  }));
+
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `Answer the original request using only the evidence below. Do not call tools. If this is an incident investigation, produce the requested Assessment, Evidence, Recommended action, and Confidence sections.\n\nOriginal request:\n${question}\n\nCollected evidence:\n${JSON.stringify(evidence, null, 2)}`,
+    },
+  ];
 }
 
 export async function investigate(ai: AiRunner, question: string, emit?: InvestigationEventSink): Promise<InvestigationResult> {
@@ -224,22 +287,34 @@ export async function investigate(ai: AiRunner, question: string, emit?: Investi
   }
 
   if (!finalContent && !partial) {
-    try {
-      await emit?.({ type: "model_turn", iteration: iterations + 1, phase: "synthesize", model: MODEL });
-      const raw = await runInference(ai, {
+    const synthesisInputs: Record<string, unknown>[] = [
+      {
         messages: [
           ...messages,
-          { role: "user", content: "Tool budget reached. Write the final evidence-grounded incident report now." },
+          { role: "user", content: "The investigation phase has ended. Answer the original request now using the evidence collected." },
         ],
         tool_choice: "none",
         temperature: 0.1,
-        max_tokens: 700,
-      });
+        max_tokens: 900,
+      },
+      {
+        messages: compactSynthesisMessages(question, steps),
+        temperature: 0.1,
+        max_tokens: 900,
+      },
+    ];
+
+    for (const input of synthesisInputs) {
       iterations += 1;
-      finalContent = extractModelTurn(raw, iterations).content.trim();
-    } catch (error) {
-      console.error("Final synthesis failed", { error: safeError(error) });
-      partial = true;
+      await emit?.({ type: "model_turn", iteration: iterations, phase: "synthesize", model: MODEL });
+      try {
+        const raw = await runInference(ai, input);
+        finalContent = extractModelTurn(raw, iterations).content.trim();
+        if (finalContent) break;
+        console.warn("Final synthesis returned no usable content", { iteration: iterations });
+      } catch (error) {
+        console.error("Final synthesis failed", { iteration: iterations, error: safeError(error) });
+      }
     }
   }
 

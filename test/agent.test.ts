@@ -83,6 +83,61 @@ describe("agent loop", () => {
     expect(result.steps[2]?.result).toEqual(expect.objectContaining({ count: 2 }));
   });
 
+  it("recovers concatenated tool arguments as distinct calls", async () => {
+    const responses: unknown[] = [
+      {
+        choices: [{
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_metrics",
+              type: "function",
+              function: {
+                name: "query_metrics",
+                arguments: '{"metric":"error_rate","service":"checkout-api","window":"last_60m"}{"metric":"error_rate","service":"inventory-api","window":"last_60m"}',
+              },
+            }],
+          },
+        }],
+      },
+      { choices: [{ message: { role: "assistant", content: "The two error rates are elevated." } }] },
+    ];
+    const ai: AiRunner = {
+      async run() {
+        return responses.shift()!;
+      },
+    };
+
+    const result = await investigate(ai, "Compare checkout and inventory error rates.");
+
+    expect(result.status).toBe("complete");
+    expect(result.steps).toHaveLength(2);
+    expect(result.steps.map((step) => step.arguments.service)).toEqual(["checkout-api", "inventory-api"]);
+    expect(result.steps.every((step) => !step.error)).toBe(true);
+  });
+
+  it("retries an empty synthesis using compact evidence", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const responses: unknown[] = Array.from({ length: 8 }, (_, index) => toolTurn(`call_${index}`, "list_services", {}));
+    responses.push({ choices: [{ message: { role: "assistant", content: "" } }] });
+    responses.push({ choices: [{ message: { role: "assistant", content: "## Assessment\nRecovered synthesis." } }] });
+    const ai: AiRunner = {
+      async run(_model, input) {
+        requests.push(input);
+        return responses.shift()!;
+      },
+    };
+
+    const result = await investigate(ai, "Investigate the current checkout incident.");
+
+    expect(result.status).toBe("complete");
+    expect(result.answer).toContain("Recovered synthesis");
+    expect(result.iterations).toBe(10);
+    expect(requests).toHaveLength(10);
+    expect(requests[9]?.tool_choice).toBeUndefined();
+  });
+
   it("returns a safe partial report when inference fails", async () => {
     const ai: AiRunner = { async run() { throw new Error("upstream unavailable"); } };
     const result = await investigate(ai, "Investigate the current checkout incident.");
