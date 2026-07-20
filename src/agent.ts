@@ -1,7 +1,7 @@
 import { executeTelemetryTool, summarizeToolResult, TOOL_DEFINITIONS } from "./telemetry";
 import type { AgentStep, ChatMessage, InvestigationResult, ToolCall } from "./types";
 
-export const MODEL = "@cf/zai-org/glm-4.7-flash";
+export const MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const MAX_ITERATIONS = 7;
 const MAX_TOOL_CALLS = 10;
 
